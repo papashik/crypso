@@ -277,7 +277,7 @@ func (g *Generator) Certificate(cfg CertificateConfig) *x509.Certificate {
 		KeyUsage:              keyUsage,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-		IsCA:                  true,
+		IsCA:                  cfg.IsCA,
 	}
 
 	// if len(cfg.Hosts) == 0 {

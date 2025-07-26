@@ -36,7 +36,7 @@ var (
 
 	mode Mode
 
-	timeFormats         = []string{time.DateOnly}
+	timeFormats         = []string{time.DateOnly, time.DateTime}
 	supportedAlgorithms = []string{
 		x509.MLDSA65.String(),
 		x509.ECDSA.String(),
@@ -123,11 +123,12 @@ func main() {
 						Organization: flagCertName,
 						Start:        flagCertStart,
 						Dur:          flagCertDuration,
-						Hosts:        flagCertHosts,
 						Private:      caKey,
-						IsCA:         false,
-						PublicKey:    key.Public(),
-						Parent:       caCert,
+						Hosts:        flagCertHosts,
+
+						IsCA:      false,
+						PublicKey: key.Public(),
+						Parent:    caCert,
 					})
 				}
 			}
