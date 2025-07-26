@@ -7,7 +7,7 @@ package x509
 import (
 	"bytes"
 	"crypto"
-	"crypso/x509/pkix"
+	"crypto/x509/pkix"
 	"errors"
 	"fmt"
 	"iter"
@@ -745,6 +745,18 @@ func (c *Certificate) isValid(certType int, currentChain []*Certificate, opts *V
 	return nil
 }
 
+func (c *Certificate) VerifyRoots(roots ...*Certificate) error {
+	pool := NewCertPool()
+	for _, r := range roots {
+		if r == nil {
+			panic("x509: nil root certificate")
+		}
+		pool.AddCert(r)
+	}
+	_, err := c.Verify(VerifyOptions{Roots: pool})
+	return err
+}
+
 // Verify attempts to verify c by building one or more chains from c to a
 // certificate in opts.Roots, using certificates in opts.Intermediates if
 // needed. If successful, it returns one or more chains where the first
@@ -794,7 +806,7 @@ func (c *Certificate) Verify(opts VerifyOptions) (chains [][]*Certificate, err e
 	}
 
 	// Use platform verifiers, where available, if Roots is from SystemCertPool.
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" || runtime.GOOS == "ios" {
+	if runtime.GOOS == "windows" || runtime.GOOS == "ios" {
 		// Don't use the system verifier if the system pool was replaced with a non-system pool,
 		// i.e. if SetFallbackRoots was called with x509usefallbackroots=1.
 		systemPool := systemRootsPool()

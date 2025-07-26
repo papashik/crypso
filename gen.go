@@ -2,8 +2,6 @@ package main
 
 import (
 	"crypso/x509"
-	"crypso/x509/pkix"
-	"errors"
 
 	"crypto"
 	"crypto/ecdsa"
@@ -11,26 +9,36 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"net"
 	"os"
 	"time"
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
-
 	"go.uber.org/zap"
 )
 
+var (
+	defaultKeyAlgorithm = x509.MLDSA65.String()
+)
+
 const (
-	defaultPrivateKeyFilePath    = "key.pem"
-	defaultCertificateFilePath   = "cert.pem"
-	defaultCACertificateFilePath = "ca.pem"
-	defaultKeyAlgorithm          = "mldsa65"
-	privateKeyPEMType            = "PRIVATE KEY"
-	certificatePEMType           = "CERTIFICATE"
+	privateKeyPEMType  = "PRIVATE KEY"
+	certificatePEMType = "CERTIFICATE"
 
 	bitSizeRSA = 2048
 )
+
+func isSupportedAlgorithm(algo string) bool {
+	for _, a := range supportedAlgorithms {
+		if a == algo {
+			return true
+		}
+	}
+	return false
+}
 
 type Generator struct {
 	l *zap.Logger
@@ -59,7 +67,8 @@ func (g *Generator) Key(privateFile, keyAlgorithm string) crypto.Signer {
 
 		var p *pem.Block
 		if p, _ = pem.Decode(keyBytes); p == nil {
-			g.l.Fatal("Failed to read PEM data from private key file", path)
+			g.l.Warn("Failed to read PEM data from private key file", path)
+			goto generate
 		} else if p.Type != privateKeyPEMType {
 			g.l.Fatal("Found invalid PEM block type", path, zap.String("type", p.Type),
 				zap.String("expected_type", privateKeyPEMType))
@@ -72,11 +81,35 @@ func (g *Generator) Key(privateFile, keyAlgorithm string) crypto.Signer {
 
 		algo := privateKeyAlgorithm(key)
 		g.l.Info("Read private key from file", path, zap.String("algorithm", algo))
-		if keyAlgorithm != "" && keyAlgorithm != algo {
-			g.l.Fatal("Private key algorithm differs", path,
-				zap.String("algorithm", algo), zap.String("expected_algorithm", keyAlgorithm))
+
+		g.l.Debug("Comparing request and certificate key algorithms")
+		if keyAlgorithm == "" {
+			g.l.Debug("Requested private key algorithm is empty, using found one", zap.String("algorithm", algo))
+			keyAlgorithm = algo
+		} else if !isSupportedAlgorithm(keyAlgorithm) {
+			g.l.Debug("Unknown request key algorithm, using default one",
+				zap.String("request_algorithm", keyAlgorithm), zap.String("default", defaultKeyAlgorithm))
+			keyAlgorithm = defaultKeyAlgorithm
 		}
-		return key.(crypto.Signer)
+
+		if keyAlgorithm == algo {
+			g.l.Debug("Request and certificate private key algorithms are equal", zap.String("algorithm", algo))
+			switch keyAlgorithm {
+			case x509.MLDSA65.String():
+				return key.(*mldsa65.PrivateKey)
+			case x509.ECDSA.String():
+				return key.(*ecdsa.PrivateKey)
+			case x509.RSA.String():
+				return key.(*rsa.PrivateKey)
+			case x509.Ed25519.String():
+				return key.(ed25519.PrivateKey)
+			default:
+				g.l.Error("Unreachable", zap.String("algorithm", keyAlgorithm))
+			}
+		}
+
+		g.l.Warn("Private key algorithm differs, regenerating", path,
+			zap.String("algorithm", algo), zap.String("request_algorithm", keyAlgorithm))
 
 	} else if errors.Is(err, os.ErrNotExist) {
 		g.l.Debug("Private key file does not exist, creating a new one", path)
@@ -84,6 +117,7 @@ func (g *Generator) Key(privateFile, keyAlgorithm string) crypto.Signer {
 		g.l.Fatal("Failed to check private key file stat", path, zap.Error(err))
 	}
 
+generate:
 	keyOut, err := os.OpenFile(privateFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		g.l.Fatal("Failed to open private key file for writing", path, zap.Error(err))
@@ -100,14 +134,13 @@ func (g *Generator) Key(privateFile, keyAlgorithm string) crypto.Signer {
 			zap.String("algorithm", keyAlgorithm), zap.String("default", defaultKeyAlgorithm))
 		keyAlgorithm = defaultKeyAlgorithm
 		fallthrough
-	case "mldsa65":
+	case x509.MLDSA65.String():
 		_, private, err = mldsa65.GenerateKey(rand.Reader)
-	case "ecdsa":
+	case x509.ECDSA.String():
 		private, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	case "rsa":
+	case x509.RSA.String():
 		private, err = rsa.GenerateKey(rand.Reader, bitSizeRSA)
-
-	case "ed25519":
+	case x509.Ed25519.String():
 		_, private, err = ed25519.GenerateKey(rand.Reader)
 	}
 	if err != nil {
@@ -145,16 +178,75 @@ type CertificateConfig struct {
 	Parent    *x509.Certificate
 }
 
-func (g *Generator) Certificate(cfg CertificateConfig) *x509.Certificate {
-	if cfg.File == "" {
-		cfg.File = defaultCertificateFilePath
-		if cfg.IsCA {
-			cfg.File = defaultCACertificateFilePath
-		}
-		g.l.Debug("Certificate file is not specified, using default one", zap.String("path", cfg.File))
+func (cfg *CertificateConfig) equalToCert(l *zap.Logger, cert *x509.Certificate) bool {
+	path := zap.String("path", cfg.File)
+	l.Debug("Comparing two certificates", path)
+	if len(cert.Subject.Organization) != 1 || cert.Subject.Organization[0] != cfg.Organization {
+		l.Debug("Organization differs", zap.String("request_organization", cfg.Organization))
+		return false
 	}
 
-	if cert := tryToReadCertificate(g.l, cfg.File); cert != nil {
+	if cert.NotBefore != cfg.Start || cert.NotAfter.Sub(cert.NotBefore) != cfg.Dur {
+		l.Debug("Time differs", zap.Time("request_start", cfg.Start), zap.Duration("request_duration", cfg.Dur))
+		return false
+	}
+
+	if len(cert.DNSNames)+len(cert.IPAddresses) != len(cfg.Hosts) {
+		l.Debug("Hosts number differs", zap.Strings("request_hosts", cfg.Hosts))
+		return false
+	}
+	mapCert := map[string]bool{}
+	for _, n := range cert.DNSNames {
+		mapCert[n] = true
+	}
+
+	for _, ip := range cert.IPAddresses {
+		mapCert[ip.String()] = true
+	}
+
+	for _, c := range cfg.Hosts {
+		if !mapCert[c] {
+			l.Debug("No host name in certificate", zap.String("host", c))
+			return false
+		}
+	}
+
+	if cert.IsCA != cfg.IsCA {
+		l.Debug("CA flag differs", zap.Bool("request_is_ca", cfg.IsCA))
+		return false
+	}
+
+	pub := cert.PublicKey.(interface{ Equal(x crypto.PublicKey) bool })
+	var (
+		pub1   crypto.PublicKey
+		parent *x509.Certificate
+	)
+	if cert.IsCA {
+		pub1 = cfg.Private.Public()
+		parent = cert
+	} else {
+		pub1 = cfg.PublicKey
+		parent = cfg.Parent
+	}
+	if !pub.Equal(pub1) {
+		l.Debug("Public key differs")
+		return false
+	}
+
+	if err := cert.VerifyRoots(parent); err != nil {
+		l.Debug("Failed to verify, using requested parent", zap.Error(err))
+		return false
+	}
+
+	l.Debug("Certificate and request are equal")
+	return true
+}
+
+func (g *Generator) Certificate(cfg CertificateConfig) *x509.Certificate {
+	cert := tryToReadCertificate(g.l, cfg.File)
+	if cert != nil && !cfg.equalToCert(g.l, cert) {
+		g.l.Warn("Certificate exists, but differs from requested, regenerating")
+	} else if cert != nil {
 		return cert
 	}
 
@@ -167,7 +259,7 @@ func (g *Generator) Certificate(cfg CertificateConfig) *x509.Certificate {
 	// ECDSA, ED25519 and RSA subject keys should have the DigitalSignature
 	// KeyUsage bits set in the x509.Certificate
 	keyUsage := x509.KeyUsageDigitalSignature
-	if publicKeyAlgorithm(cfg.PublicKey) == "rsa" {
+	if publicKeyAlgorithm(cfg.PublicKey) == x509.RSA {
 		// Only RSA subject keys should have the KeyEncipherment KeyUsage bits set. In
 		// the context of TLS this KeyUsage is particular to RSA key exchange and
 		// authentication.
@@ -175,6 +267,7 @@ func (g *Generator) Certificate(cfg CertificateConfig) *x509.Certificate {
 	}
 
 	template := x509.Certificate{
+		//SignatureAlgorithm: x,
 		Subject: pkix.Name{
 			Organization: []string{cfg.Organization},
 		},
@@ -184,11 +277,12 @@ func (g *Generator) Certificate(cfg CertificateConfig) *x509.Certificate {
 		KeyUsage:              keyUsage,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
+		IsCA:                  true,
 	}
 
-	if len(cfg.Hosts) == 0 {
-		cfg.Hosts = []string{"localhost"}
-	}
+	// if len(cfg.Hosts) == 0 {
+	// 	cfg.Hosts = []string{"localhost"}
+	// }
 
 	for _, h := range cfg.Hosts {
 		if ip := net.ParseIP(h); ip != nil {
@@ -201,7 +295,6 @@ func (g *Generator) Certificate(cfg CertificateConfig) *x509.Certificate {
 	var derBytes []byte
 
 	if cfg.IsCA {
-		template.IsCA = true
 		template.KeyUsage |= x509.KeyUsageCertSign
 		derBytes, err = x509.CreateCertificate(rand.Reader, &template, &template, cfg.Private.Public(), cfg.Private)
 	} else {
@@ -218,15 +311,11 @@ func (g *Generator) Certificate(cfg CertificateConfig) *x509.Certificate {
 
 	g.l.Info("Generated certificate", zap.String("path", cfg.File))
 
-	cert, err := x509.ParseCertificate(derBytes)
+	cert, err = x509.ParseCertificate(derBytes)
 	if err != nil {
 		g.l.Fatal("Failed to parse generated certificate", zap.Error(err))
 	}
 	return cert
-}
-
-type Verifier struct {
-	l *zap.Logger
 }
 
 func tryToReadCertificate(l *zap.Logger, file string) *x509.Certificate {
@@ -245,7 +334,8 @@ func tryToReadCertificate(l *zap.Logger, file string) *x509.Certificate {
 
 		var p *pem.Block
 		if p, _ = pem.Decode(keyBytes); p == nil {
-			l.Fatal("Failed to read PEM data from certificate file", path)
+			l.Warn("Failed to read PEM data from certificate file", path)
+			return nil
 		} else if p.Type != certificatePEMType {
 			l.Fatal("Found invalid PEM block type", path, zap.String("type", p.Type),
 				zap.String("expected_type", certificatePEMType))
@@ -256,12 +346,11 @@ func tryToReadCertificate(l *zap.Logger, file string) *x509.Certificate {
 			l.Fatal("Failed to unmarshal certificate", path, zap.Error(err))
 		}
 
-		algo := publicKeyAlgorithm(cert.PublicKeyAlgorithm)
-		l.Info("Read certificate from file", path, zap.String("algorithm", algo))
+		l.Info("Read certificate from file", path, zap.String("algorithm", cert.PublicKeyAlgorithm.String()))
 		return cert
 
 	} else if errors.Is(err, os.ErrNotExist) {
-		l.Debug("Certificate file does not exist, creating a new one", path)
+		l.Debug("Certificate file does not exist", path)
 	} else {
 		l.Fatal("Failed to check certificate file stat", path, zap.Error(err))
 	}
@@ -271,29 +360,29 @@ func tryToReadCertificate(l *zap.Logger, file string) *x509.Certificate {
 func privateKeyAlgorithm(key crypto.PrivateKey) string {
 	switch key.(type) {
 	case *mldsa65.PrivateKey:
-		return "mldsa65"
+		return x509.MLDSA65.String()
 	case *ecdsa.PrivateKey:
-		return "ecdsa"
+		return x509.ECDSA.String()
 	case *rsa.PrivateKey:
-		return "rsa"
+		return x509.RSA.String()
 	case ed25519.PrivateKey:
-		return "ed25519"
+		return x509.Ed25519.String()
 	default:
 		return "unknown"
 	}
 }
 
-func publicKeyAlgorithm(key crypto.PublicKey) string {
+func publicKeyAlgorithm(key crypto.PublicKey) x509.PublicKeyAlgorithm {
 	switch key.(type) {
 	case *mldsa65.PublicKey:
-		return "mldsa65"
+		return x509.MLDSA65
 	case *ecdsa.PublicKey:
-		return "ecdsa"
+		return x509.ECDSA
 	case *rsa.PublicKey:
-		return "rsa"
+		return x509.RSA
 	case ed25519.PublicKey:
-		return "ed25519"
+		return x509.Ed25519
 	default:
-		return "unknown"
+		return x509.UnknownPublicKeyAlgorithm
 	}
 }

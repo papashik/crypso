@@ -11,10 +11,13 @@ import (
 
 	flag "github.com/spf13/pflag"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 var (
-	flagVerbose int
+	flagVerbose          int
+	flagSuppressWarnings bool
+	flagJSONLogger       bool
 
 	flagPrivateKeyFile string
 	flagKeyAlgorithm   string
@@ -22,7 +25,7 @@ var (
 	flagCertName       string
 	flagCertStart      time.Time
 	flagCertDuration   time.Duration
-	flagCertHosts      string
+	flagCertHosts      []string
 
 	flagCAPrivateKeyFile string
 	flagCAKeyAlgorithm   string
@@ -33,7 +36,13 @@ var (
 
 	mode Mode
 
-	timeFormats = []string{"Jan 1 15:04:05 2011"}
+	timeFormats         = []string{time.DateOnly}
+	supportedAlgorithms = []string{
+		x509.MLDSA65.String(),
+		x509.ECDSA.String(),
+		x509.RSA.String(),
+		x509.Ed25519.String(),
+	}
 )
 
 type Mode = string
@@ -44,36 +53,43 @@ const (
 )
 
 func main() {
-	flag.Usage = func() {
+	f := flag.NewFlagSet("", flag.ExitOnError)
+	f.SortFlags = false
+	f.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of crypso:\n")
-		fmt.Fprintf(os.Stderr, "  crypso [MODE] [flags]\n")
-		fmt.Fprintf(os.Stderr, "  where MODE is one of: %s, %s\n", modeGen, modeVerify)
-		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "  crypso MODE {flag}\n")
+		fmt.Fprintf(os.Stderr, "  where MODE is one of:\n")
+		fmt.Fprintf(os.Stderr, "    %s\n", modeGen)
+		fmt.Fprintf(os.Stderr, "    %s PATH {CA_PATH}\n", modeVerify)
+		fmt.Fprintf(os.Stderr, "Flags:\n")
+		f.PrintDefaults()
 	}
-	flag.CountVarP(&flagVerbose, "verbose", "v", "level of logging(-v, -vv or -vvv)")
+	f.CountVarP(&flagVerbose, "verbose", "v", "use verbose logging (-v or -vv)")
+	f.BoolVar(&flagSuppressWarnings, "suppress-warnings", false, "suppress warning-level messages")
+	f.BoolVarP(&flagJSONLogger, "json", "j", false, "output logs in JSON format")
 
-	flag.StringVar(&flagPrivateKeyFile, "private", "", "private key filename (will be used or generated)")
-	flag.StringVar(&flagKeyAlgorithm, "algorithm", "",
-		`private key algorithm to generate, must be one of: 'mldsa65', 'ecdsa' (P-256), 'rsa', 'ed25519'`)
-	flag.StringVar(&flagCertFile, "cert", "", "certificate filename")
-	flag.StringVar(&flagCertName, "name", "", "certificate organization name")
-	flag.TimeVar(&flagCertStart, "start", time.Time{}, timeFormats, "creation date formatted as one of "+strings.Join(timeFormats, ", "))
-	flag.DurationVar(&flagCertDuration, "duration", 0, "CA certificate duration")
-	flag.StringVar(&flagCertHosts, "hosts", "", "comma-separated hostnames and IPs to generate a certificate for")
+	f.StringVar(&flagPrivateKeyFile, "private", "", "private key filename (will be used or generated)")
+	f.StringVar(&flagKeyAlgorithm, "algorithm", "",
+		`private key algorithm to generate, must be one of: `+strings.Join(supportedAlgorithms, ", "))
+	f.StringVar(&flagCertFile, "cert", "", "certificate filename")
+	f.StringVar(&flagCertName, "name", "", "certificate organization name")
+	f.TimeVar(&flagCertStart, "start", time.Time{}, timeFormats, "creation date formatted as one of "+strings.Join(timeFormats, ", "))
+	f.DurationVar(&flagCertDuration, "duration", 365*24*time.Hour, "certificate duration")
+	f.StringSliceVar(&flagCertHosts, "hosts", []string{}, "comma-separated hostnames and IPs to generate a certificate for")
 
-	flag.StringVar(&flagCAPrivateKeyFile, "ca-private", "", "CA private key filename (will be used or generated)")
-	flag.StringVar(&flagCAKeyAlgorithm, "ca-algorithm", "",
-		`CA private key algorithm to generate, must be one of: 'mldsa65', 'ecdsa' (P-256), 'rsa', 'ed25519'`)
-	flag.StringVar(&flagCACertFile, "ca-cert", "", "CA certificate filename")
-	flag.StringVar(&flagCACertName, "ca-name", "", "CA certificate organization name")
-	flag.TimeVar(&flagCACertStart, "ca-start", time.Time{}, timeFormats, "creation date formatted as one of "+strings.Join(timeFormats, ", "))
-	flag.DurationVar(&flagCACertDuration, "ca-duration", 0, "CA certificate duration")
+	f.StringVar(&flagCAPrivateKeyFile, "ca-private", "", "CA private key filename (will be used or generated)")
+	f.StringVar(&flagCAKeyAlgorithm, "ca-algorithm", "",
+		`CA private key algorithm to generate, must be one of: `+strings.Join(supportedAlgorithms, ", "))
+	f.StringVar(&flagCACertFile, "ca-cert", "", "CA certificate filename")
+	f.StringVar(&flagCACertName, "ca-name", "", "CA certificate organization name")
+	f.TimeVar(&flagCACertStart, "ca-start", time.Time{}, timeFormats, "creation date formatted as one of "+strings.Join(timeFormats, ", "))
+	f.DurationVar(&flagCACertDuration, "ca-duration", 10*365*24*time.Hour, "CA certificate duration")
 
-	flag.Parse()
+	f.Parse(os.Args[1:])
 
-	l := newLogger(flagVerbose)
+	l := newLogger(flagVerbose, flagSuppressWarnings, flagJSONLogger)
 
-	mode = Mode(flag.Arg(0))
+	mode = Mode(f.Arg(0))
 	l.Debug("Starting", zap.String("mode", mode))
 
 	switch mode {
@@ -107,6 +123,7 @@ func main() {
 						Organization: flagCertName,
 						Start:        flagCertStart,
 						Dur:          flagCertDuration,
+						Hosts:        flagCertHosts,
 						Private:      caKey,
 						IsCA:         false,
 						PublicKey:    key.Public(),
@@ -116,19 +133,30 @@ func main() {
 			}
 		}
 	case modeVerify:
-		caFile := flag.Arg(1)
-		certFile := flag.Arg(2)
-		var ca, cert *x509.Certificate
-		ca = tryToReadCertificate(l, caFile)
-		cert = tryToReadCertificate(l, certFile)
-		pool := x509.CertPool{}
-		pool.AddCert(ca)
-		//pool.AddCert(cert)
-		_, err := cert.Verify(x509.VerifyOptions{Roots: &pool})
+		pool := x509.NewCertPool()
+		certFile := f.Arg(1)
+		cert := tryToReadCertificate(l, certFile)
+		if cert == nil {
+			l.Fatal("Failed to read verifying certificate", zap.String("path", certFile))
+		}
+		if f.NArg() > 2 {
+			caFiles := f.Args()[2:]
+			for _, c := range caFiles {
+				ca := tryToReadCertificate(l, c)
+				if ca == nil {
+					l.Fatal("Failed to read CA certificate", zap.String("path", c))
+				}
+				pool.AddCert(ca)
+			}
+		}
+
+		l.Debug("Trying to verify")
+		_, err := cert.Verify(x509.VerifyOptions{Roots: pool})
 		if err != nil {
 			l.Fatal("Failed to verify certificate", zap.Error(err))
 		}
-		//fmt.Println(x.UnknownPublicKeyAlgorithm)
+
+		l.Info("Successfully verified")
 	default:
 		l.Fatal("Working mode is invalid")
 	}
@@ -136,22 +164,31 @@ func main() {
 	l.Debug("Exiting")
 }
 
-func newLogger(verbose int) *zap.Logger {
+func newLogger(verbose int, suppressWarnings, inJSON bool) *zap.Logger {
 	cfg := zap.NewDevelopmentConfig()
+	cfg.DisableCaller = true
+	cfg.EncoderConfig.TimeKey = ""
+	if inJSON {
+		cfg = zap.NewProductionConfig()
+		cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	}
+	cfg.DisableStacktrace = true
 	switch verbose {
 	case 0:
-		cfg.Level.SetLevel(zap.ErrorLevel)
-	case 1:
 		cfg.Level.SetLevel(zap.WarnLevel)
-	case 2:
+	case 1:
 		cfg.Level.SetLevel(zap.InfoLevel)
 	default:
 		cfg.Level.SetLevel(zap.DebugLevel)
 	}
-	cfg.Sampling = nil
-	cfg.DisableCaller = true
-	cfg.DisableStacktrace = true
-	cfg.EncoderConfig.TimeKey = ""
+
+	if suppressWarnings {
+		cfg.Level.SetLevel(zap.ErrorLevel)
+	}
+
+	//cfg.Sampling = nil
+	//
+	//cfg.DisableStacktrace = true
 
 	return zap.Must(cfg.Build())
 }
