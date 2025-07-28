@@ -15,5 +15,5 @@ go run . gen --ca-private=ca-private.pem --ca-cert=ca.pem --ca-algorithm=MLDSA65
 At this moment, generating CA certificate fails with ECDSA or RSA algorithm.
 ## Verify
 ```bash
-go run . verify cert.pem ca.pem  -vvv
+go run . verify cert.pem ca.pem  -vv
 ```
