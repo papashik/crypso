@@ -1,5 +1,5 @@
 # crypso
-
+[![Go Reference](https://pkg.go.dev/badge/pkg/go/dev/github.com/papashik/crypso.svg)](https://pkg.go.dev/pkg/go/dev/github.com/papashik/crypso)
 ## Help
 ```bash
 go run . --help
