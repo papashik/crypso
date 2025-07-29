@@ -1,4 +1,4 @@
-module crypso
+module github.com/papashik/crypso
 
 go 1.24.5
 

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"crypso/x509"
+	"github.com/papashik/crypso/x509"
 
 	"crypto"
 	"fmt"
