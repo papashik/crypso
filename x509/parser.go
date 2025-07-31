@@ -1101,10 +1101,6 @@ func parseCertificate(der []byte) (*Certificate, error) {
 }
 
 // ParseCertificate parses a single certificate from the given ASN.1 DER data.
-//
-// Before Go 1.23, ParseCertificate accepted certificates with negative serial
-// numbers. This behavior can be restored by including "x509negativeserial=1" in
-// the GODEBUG environment variable.
 func ParseCertificate(der []byte) (*Certificate, error) {
 	cert, err := parseCertificate(der)
 	if err != nil {

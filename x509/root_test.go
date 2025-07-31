@@ -32,7 +32,6 @@ func TestFallback(t *testing.T) {
 		systemRoots     *CertPool
 		systemPool      bool
 		poolContent     []*Certificate
-		forceFallback   bool
 		returnsFallback bool
 	}{
 		{
@@ -48,31 +47,19 @@ func TestFallback(t *testing.T) {
 			name:        "empty systemRoots system pool",
 			systemRoots: NewCertPool(),
 			systemPool:  true,
+			returnsFallback: true,
 		},
 		{
 			name:        "filled systemRoots system pool",
 			systemRoots: NewCertPool(),
 			poolContent: []*Certificate{{}},
 			systemPool:  true,
+			returnsFallback: true,
 		},
 		{
 			name:        "filled systemRoots",
 			systemRoots: NewCertPool(),
 			poolContent: []*Certificate{{}},
-		},
-		{
-			name:            "filled systemRoots, force fallback",
-			systemRoots:     NewCertPool(),
-			poolContent:     []*Certificate{{}},
-			forceFallback:   true,
-			returnsFallback: true,
-		},
-		{
-			name:            "filled systemRoot system pool, force fallback",
-			systemRoots:     NewCertPool(),
-			poolContent:     []*Certificate{{}},
-			systemPool:      true,
-			forceFallback:   true,
 			returnsFallback: true,
 		},
 	}
@@ -86,11 +73,6 @@ func TestFallback(t *testing.T) {
 			}
 			for _, c := range tc.poolContent {
 				systemRoots.AddCert(c)
-			}
-			if tc.forceFallback {
-				t.Setenv("GODEBUG", "x509usefallbackroots=1")
-			} else {
-				t.Setenv("GODEBUG", "x509usefallbackroots=0")
 			}
 
 			fallbackPool := NewCertPool()

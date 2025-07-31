@@ -1293,7 +1293,7 @@ func buildCertExtensions(template *Certificate, subjectIsEmpty bool, authorityKe
 		n++
 	}
 
-	if ((len(template.PolicyIdentifiers) > 0) || (len(template.Policies) > 0)) &&
+	if (len(template.PolicyIdentifiers) > 0) &&
 		!oidInExtensions(oidExtensionCertificatePolicies, template.ExtraExtensions) {
 		ret[n], err = marshalCertificatePolicies(template.Policies, template.PolicyIdentifiers)
 		if err != nil {
@@ -1675,13 +1675,6 @@ var emptyASN1Subject = []byte{0x30, 0}
 //
 // If template.SerialNumber is nil, a serial number will be generated which
 // conforms to RFC 5280, Section 4.1.2.2 using entropy from rand.
-//
-// The PolicyIdentifier and Policies fields can both be used to marshal certificate
-// policy OIDs. By default, only the Policies is marshaled, but if the
-// GODEBUG setting "x509usepolicies" has the value "0", the PolicyIdentifiers field will
-// be marshaled instead of the Policies field. This changed in Go 1.24. The Policies field can
-// be used to marshal policy OIDs which have components that are larger than 31
-// bits.
 func CreateCertificate(rand io.Reader, template, parent *Certificate, pub, priv any) ([]byte, error) {
 	key, ok := priv.(crypto.Signer)
 	if !ok {

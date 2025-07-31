@@ -43,9 +43,6 @@ type pkcs1PublicKey struct {
 // ParsePKCS1PrivateKey parses an [RSA] private key in PKCS #1, ASN.1 DER form.
 //
 // This kind of key is commonly encoded in PEM blocks of type "RSA PRIVATE KEY".
-//
-// Before Go 1.24, the CRT parameters were ignored and recomputed. To restore
-// the old behavior, use the GODEBUG=x509rsacrt=0 environment variable.
 func ParsePKCS1PrivateKey(der []byte) (*rsa.PrivateKey, error) {
 	var priv pkcs1PrivateKey
 	rest, err := asn1.Unmarshal(der, &priv)
