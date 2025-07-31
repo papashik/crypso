@@ -29,7 +29,6 @@ import (
 	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/sha1"
-	"crypto/sha256"
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/pem"
@@ -1587,7 +1586,13 @@ func signingParamsForKey(key crypto.Signer, sigAlgo SignatureAlgorithm) (Signatu
 }
 
 func signTBS(tbs []byte, key crypto.Signer, sigAlg SignatureAlgorithm, rand io.Reader) ([]byte, error) {
+	signed := tbs
 	hashFunc := sigAlg.hashFunc()
+	if hashFunc != 0 {
+		h := hashFunc.New()
+		h.Write(signed)
+		signed = h.Sum(nil)
+	}
 
 	var signerOpts crypto.SignerOpts = hashFunc
 	if sigAlg.isRSAPSS() {
@@ -1597,7 +1602,7 @@ func signTBS(tbs []byte, key crypto.Signer, sigAlg SignatureAlgorithm, rand io.R
 		}
 	}
 
-	signature, err := key.Sign(rand, tbs, signerOpts)
+	signature, err := key.Sign(rand, signed, signerOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -1747,21 +1752,12 @@ func CreateCertificate(rand io.Reader, template, parent *Certificate, pub, priv 
 
 	subjectKeyId := template.SubjectKeyId
 	if len(subjectKeyId) == 0 && template.IsCA {
-		if true { // TODO
-			// SubjectKeyId generated using method 1 in RFC 5280, Section 4.2.1.2:
-			//   (1) The keyIdentifier is composed of the 160-bit SHA-1 hash of the
-			//   value of the BIT STRING subjectPublicKey (excluding the tag,
-			//   length, and number of unused bits).
-			h := sha1.Sum(publicKeyBytes)
-			subjectKeyId = h[:]
-		} else {
-			// SubjectKeyId generated using method 1 in RFC 7093, Section 2:
-			//    1) The keyIdentifier is composed of the leftmost 160-bits of the
-			//    SHA-256 hash of the value of the BIT STRING subjectPublicKey
-			//    (excluding the tag, length, and number of unused bits).
-			h := sha256.Sum256(publicKeyBytes)
-			subjectKeyId = h[:20]
-		}
+		// SubjectKeyId generated using method 1 in RFC 5280, Section 4.2.1.2:
+		//   (1) The keyIdentifier is composed of the 160-bit SHA-1 hash of the
+		//   value of the BIT STRING subjectPublicKey (excluding the tag,
+		//   length, and number of unused bits).
+		h := sha1.Sum(publicKeyBytes)
+		subjectKeyId = h[:]
 	}
 
 	// Check that the signer's public key matches the private key, if available.
