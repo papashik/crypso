@@ -187,9 +187,5 @@ func newLogger(verbose int, suppressWarnings, inJSON bool) *zap.Logger {
 		cfg.Level.SetLevel(zap.ErrorLevel)
 	}
 
-	//cfg.Sampling = nil
-	//
-	//cfg.DisableStacktrace = true
-
 	return zap.Must(cfg.Build())
 }
